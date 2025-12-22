@@ -8,8 +8,9 @@ from datetime import datetime, timezone
 # --- Configuration ---
 GITHUB_REPO = "caddyserver/caddy"
 OFFICIAL_CADDY_IMAGE = "library/caddy"
-# --- Can be set as a repository secret or variable ---
-CUSTOM_IMAGE = os.environ.get('DOCKERHUB_REPOSITORY_NAME', "caddybuilds/caddy-cloudflare")
+# --- ghcr.io image path (owner/repo format) ---
+GHCR_IMAGE_OWNER = os.environ.get('GITHUB_REPOSITORY_OWNER', "")
+GHCR_IMAGE_NAME = os.environ.get('GITHUB_REPOSITORY', "").split('/')[-1] if os.environ.get('GITHUB_REPOSITORY') else "caddy-cloudflare-l4"
 GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN', "")
 # DEPRECATED !!! CHANGE THIS if your tags start with 'v' (e.g., use 'v') !!!
 CUSTOM_TAG_PREFIX = ""
@@ -120,6 +121,78 @@ def check_docker_hub_tag(image_name, tag):
         log_error(f"Error decoding Docker Hub API response for tag '{tag}' of '{image_name}': {e}. Response: {response.text[:200]}")
         return None
 
+def check_ghcr_tag(owner, repo, tag):
+    """Checks if a specific tag exists for a ghcr.io image. Returns manifest data or None."""
+    if not owner or not repo:
+        log_error("GHCR owner or repo not configured")
+        return None
+
+    # ghcr.io uses the OCI distribution API
+    url = f"https://ghcr.io/v2/{owner.lower()}/{repo.lower()}/manifests/{tag}"
+    headers = {
+        "Accept": "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json"
+    }
+
+    # ghcr.io requires authentication even for public images
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+
+    try:
+        response = requests.get(url, headers=headers, timeout=45)
+        if response.status_code == 200:
+            return response.json()
+        elif response.status_code == 404:
+            return None
+        elif response.status_code == 401:
+            log_info(f"  Authentication required for ghcr.io. Tag may not exist or token lacks permissions.")
+            return None
+        else:
+            log_error(f"Unexpected status {response.status_code} checking ghcr.io tag '{tag}' for '{owner}/{repo}'. Response: {response.text[:200]}")
+            return None
+    except requests.exceptions.Timeout:
+        log_error(f"Timeout checking ghcr.io tag '{tag}' for '{owner}/{repo}' at {url}")
+        return None
+    except requests.exceptions.RequestException as e:
+        log_error(f"Network error checking ghcr.io tag '{tag}' for '{owner}/{repo}': {e}")
+        return None
+    except json.JSONDecodeError as e:
+        log_error(f"Error decoding ghcr.io API response for tag '{tag}' of '{owner}/{repo}': {e}")
+        return None
+
+def get_platforms_from_ghcr_manifest(manifest_data):
+    """Extracts required linux platform strings from ghcr.io manifest data."""
+    platforms = set()
+    if not manifest_data:
+        return platforms
+
+    # Handle OCI image index or Docker manifest list
+    manifests = manifest_data.get('manifests', [])
+    if not manifests:
+        log_info("Could not find 'manifests' list in ghcr.io manifest data.")
+        return platforms
+
+    for manifest in manifests:
+        if not isinstance(manifest, dict):
+            continue
+        platform = manifest.get('platform', {})
+        os_name = platform.get('os')
+        arch = platform.get('architecture')
+        variant = platform.get('variant')
+
+        if os_name != "linux" or not arch:
+            continue
+
+        platform_str = ""
+        if arch == "arm" and variant == "v7":
+            platform_str = f"{os_name}/{arch}/{variant}"
+        elif f"{os_name}/{arch}" in REQUIRED_PLATFORMS:
+            platform_str = f"{os_name}/{arch}"
+
+        if platform_str in REQUIRED_PLATFORMS:
+            platforms.add(platform_str)
+
+    return platforms
+
 def get_platforms_from_tag_data(tag_data):
     """Extracts required linux platform strings from Docker Hub tag API response."""
     platforms = set()
@@ -186,14 +259,15 @@ def main():
         set_action_output('LATEST_VERSION', latest_gh_tag)
         sys.exit(0)
 
-    # 2. Official image IS ready, check custom image status
-    log_info(f"Step 2: Checking custom image '{CUSTOM_IMAGE}:{custom_docker_tag}'...")
-    custom_tag_data = check_docker_hub_tag(CUSTOM_IMAGE, custom_docker_tag)
+    # 2. Official image IS ready, check custom image status on ghcr.io
+    ghcr_image = f"ghcr.io/{GHCR_IMAGE_OWNER}/{GHCR_IMAGE_NAME}".lower()
+    log_info(f"Step 2: Checking custom image '{ghcr_image}:{custom_docker_tag}'...")
+    custom_manifest_data = check_ghcr_tag(GHCR_IMAGE_OWNER, GHCR_IMAGE_NAME, custom_docker_tag)
     custom_image_complete = False
 
-    if custom_tag_data:
-        log_info(f"  Custom image tag '{custom_docker_tag}' found. Verifying platforms...")
-        found_custom_platforms = get_platforms_from_tag_data(custom_tag_data)
+    if custom_manifest_data:
+        log_info(f"  Custom image tag '{custom_docker_tag}' found on ghcr.io. Verifying platforms...")
+        found_custom_platforms = get_platforms_from_ghcr_manifest(custom_manifest_data)
         log_info(f"  Found custom platforms relevant to requirements: {found_custom_platforms or '{}'}")
         required_platforms_missing_in_custom = REQUIRED_PLATFORMS - found_custom_platforms
         if not required_platforms_missing_in_custom:
@@ -202,7 +276,7 @@ def main():
         else:
             log_info(f"  Custom image exists but is MISSING required platforms: {required_platforms_missing_in_custom}.")
     else:
-        log_info(f"  Custom image tag '{custom_docker_tag}' NOT found.")
+        log_info(f"  Custom image tag '{custom_docker_tag}' NOT found on ghcr.io.")
 
     # 3. Decide if a build is needed (Official is ready AND custom is incomplete/missing)
     needs_build = not custom_image_complete

@@ -37,16 +37,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-        env:
-          user: ${{ secrets.DOCKERHUB_USERNAME }}
-          token: ${{ secrets.DOCKERHUB_TOKEN }}
-        if: ${{ env.user != '' && env.token != '' }}
-
       - name: Set Repository Owner and Name in Lowercase
         run: |
           REPO_OWNER=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
@@ -70,26 +60,12 @@ jobs:
           VERSION="${VERSION#v}"
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
 
-      - name: Set Docker Hub image (if credentials exist)
-        run: |
-          # Check if Docker Hub credentials are provided
-          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
-            if [ -n "${{ secrets.DOCKERHUB_REPOSITORY_NAME }}" ]; then
-              echo "DOCKERHUB_IMAGE=${{ secrets.DOCKERHUB_REPOSITORY_NAME }}" >> $GITHUB_ENV
-            else
-              echo "DOCKERHUB_IMAGE=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.REPO_NAME }}" >> $GITHUB_ENV
-            fi
-          else
-            echo "Warning: DOCKERHUB_USERNAME or DOCKERHUB_TOKEN not set. Docker Hub image will not be pushed."
-          fi
-
       - name: Docker Metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: |
             ghcr.io/${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}
-            ${{ env.DOCKERHUB_IMAGE }}
           flavor: |
             latest=false
           tags: |
@@ -101,8 +77,8 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}-alpine,value=${{ env.VERSION }}
             type=semver,pattern={{major}}-alpine,value=${{ env.VERSION }}
           labels: |
-            org.opencontainers.image.title=Caddy Cloudflare Alpine
-            org.opencontainers.image.description=Caddy with Cloudflare DNS module (Alpine)
+            org.opencontainers.image.title=Caddy Cloudflare L4 Alpine
+            org.opencontainers.image.description=Caddy with Cloudflare DNS module and Layer 4 proxy (Alpine)
             org.opencontainers.image.url=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.version=${{ env.VERSION }}-alpine
