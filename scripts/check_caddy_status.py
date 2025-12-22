@@ -3,6 +3,7 @@ import requests
 import sys
 import json
 import uuid
+import base64
 from datetime import datetime, timezone
 
 # --- Configuration ---
@@ -121,11 +122,37 @@ def check_docker_hub_tag(image_name, tag):
         log_error(f"Error decoding Docker Hub API response for tag '{tag}' of '{image_name}': {e}. Response: {response.text[:200]}")
         return None
 
+def get_ghcr_token(owner, repo):
+    """Gets an authentication token for ghcr.io registry."""
+    # ghcr.io uses token-based auth via the token endpoint
+    scope = f"repository:{owner.lower()}/{repo.lower()}:pull"
+    token_url = f"https://ghcr.io/token?scope={scope}"
+
+    headers = {}
+    if GITHUB_TOKEN:
+        # Use GITHUB_TOKEN for authentication to get registry token
+        auth_string = base64.b64encode(f"token:{GITHUB_TOKEN}".encode()).decode()
+        headers["Authorization"] = f"Basic {auth_string}"
+
+    try:
+        response = requests.get(token_url, headers=headers, timeout=30)
+        if response.status_code == 200:
+            return response.json().get('token')
+        else:
+            log_info(f"  Could not get ghcr.io token (status {response.status_code})")
+            return None
+    except Exception as e:
+        log_info(f"  Error getting ghcr.io token: {e}")
+        return None
+
 def check_ghcr_tag(owner, repo, tag):
     """Checks if a specific tag exists for a ghcr.io image. Returns manifest data or None."""
     if not owner or not repo:
         log_error("GHCR owner or repo not configured")
         return None
+
+    # First, get a registry token
+    registry_token = get_ghcr_token(owner, repo)
 
     # ghcr.io uses the OCI distribution API
     url = f"https://ghcr.io/v2/{owner.lower()}/{repo.lower()}/manifests/{tag}"
@@ -133,18 +160,15 @@ def check_ghcr_tag(owner, repo, tag):
         "Accept": "application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json"
     }
 
-    # ghcr.io requires authentication even for public images
-    if GITHUB_TOKEN:
-        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    if registry_token:
+        headers["Authorization"] = f"Bearer {registry_token}"
 
     try:
         response = requests.get(url, headers=headers, timeout=45)
         if response.status_code == 200:
             return response.json()
-        elif response.status_code == 404:
-            return None
-        elif response.status_code == 401:
-            log_info(f"  Authentication required for ghcr.io. Tag may not exist or token lacks permissions.")
+        elif response.status_code in (401, 403, 404):
+            # 401/403/404 all mean "image not accessible" - treat as not found
             return None
         else:
             log_error(f"Unexpected status {response.status_code} checking ghcr.io tag '{tag}' for '{owner}/{repo}'. Response: {response.text[:200]}")
