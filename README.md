@@ -79,7 +79,7 @@ Here is a sample Caddyfile configuration to get you started. This configuration 
 ### Global Configuration (Use DNS Challenge for All Sites)
 In this configuration, the ACME DNS challenge provider is set globally, so it applies to all sites served by Caddy.
 
-```
+```caddyfile
 # To use your own domain name (with automatic HTTPS), first make
 # sure your domain's A/AAAA DNS records are properly pointed to
 # this machine's public IP, then replace "example.com" below with your
@@ -122,7 +122,7 @@ another-example.com {
 }
 ```
 ### Per-site Configuration
-```
+```caddyfile
 example.com {
   
     # Set this path to your site's directory.
@@ -157,7 +157,7 @@ another-example.com {
 
 ### Sample Caddyfile with Cloudflare IP Trust
 
-```
+```caddyfile
 {
   acme_dns cloudflare {env.CLOUDFLARE_API_TOKEN}
 
@@ -175,9 +175,54 @@ example.com {
 }
 ```
 
+
 With this setup:  
 - Requests proxied through Cloudflare will correctly populate `X-Forwarded-For` headers.  
 - Access logs will show the **real client IP** instead of Cloudflare’s edge server IPs.  
+
+
+### Layer 4 (TCP / UDP) Proxying
+
+#### TCP Proxy Example (MySQL)
+
+```caddyfile
+:3306 {
+  layer4 {
+    proxy {
+      to mysql:3306
+    }
+  }
+}
+```
+
+#### UDP Proxy Example (WireGuard)
+
+```caddyfile
+:51820 {
+  layer4 {
+    proxy {
+      to wireguard:51820
+    }
+  }
+}
+```
+
+#### TLS Passthrough (L4)
+
+Use this when the backend service terminates TLS itself.
+
+```caddyfile
+:443 {
+  layer4 {
+    tls {
+      passthrough
+    }
+    proxy {
+      to backend:443
+    }
+  }
+}
+```
 
 
 ## Configuration
